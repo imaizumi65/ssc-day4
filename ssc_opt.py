@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import sys
 from ssc_core import AMAX, OPCODES
 
 
@@ -223,14 +224,41 @@ class SSCOptimizer:
         return "\n".join(lines)
 
 
-def main():
-    import sys
+def main(
+    args_list: list[str] | None = None,
+    file: str | None = None,
+    source_text: str | None = None,
+):
+    import argparse
 
-    if len(sys.argv) > 1:
-        with open(sys.argv[1], "r", encoding="utf-8") as f:
-            code = f.read()
-        opt = SSCOptimizer()
-        print(opt.optimize(code))
+    parser = argparse.ArgumentParser(
+        prog="ssc_opt", description="SSC Optimizer (Peephole & Structure Optimizer)"
+    )
+    parser.add_argument(
+        "file", nargs="?", type=str, default=None, help="Input .sss file (default: stdin)"
+    )
+
+    parsed_args = parser.parse_args(args_list)
+    target_file = file if file is not None else parsed_args.file
+
+    if source_text is None:
+        if target_file:
+            try:
+                with open(target_file, "r", encoding="utf-8") as f:
+                    source_text = f.read()
+            except OSError as e:
+                sys.stderr.write(f"ssc_opt: {e}\n")
+                sys.exit(2)
+        else:
+            source_text = sys.stdin.read()
+
+    optimizer = SSCOptimizer()
+    try:
+        opt_output = optimizer.optimize(source_text)
+        print(opt_output)
+    except Exception as e:
+        sys.stderr.write(f"ssc_opt error: {e}\n")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

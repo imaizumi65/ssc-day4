@@ -1,0 +1,15 @@
+# --- フィボナッチ数の計算(fib.ssl) ---
+var	x
+var	f1, f2
+var	tmp
+
+read x
+f1 := 1
+f2 := 1
+while x > 0 do
+	tmp := f1 + f2
+	f2 := f1
+	f1 := tmp
+	x := x - 1
+done
+write f2
