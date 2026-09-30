@@ -1,6 +1,12 @@
 from dataclasses import dataclass, field
+import io
 import sys
+from pathlib import Path
+
 from ssc_core import AMAX, OPCODES
+
+# from ssc_opt import * 実行時の名前空間汚染を防止
+__all__ = ["SSCOptimizer", "Inst", "ProgramAnalysis"]
 
 
 @dataclass
@@ -229,18 +235,28 @@ def main(
     file: str | None = None,
     source_text: str | None = None,
 ):
+    """オプティマイザのメイン関数
+
+    CLIコマンド、パイプライン（標準入力）、PyCharm等からの直接呼び出しの
+    全てに対応しています。
+    """
     import argparse
 
     parser = argparse.ArgumentParser(
         prog="ssc_opt", description="SSC Optimizer (Peephole & Structure Optimizer)"
     )
     parser.add_argument(
-        "file", nargs="?", type=str, default=None, help="Input .sss file (default: stdin)"
+        "file",
+        nargs="?",
+        type=str,
+        default=None,
+        help="Input .sss file (default: stdin)",
     )
 
     parsed_args = parser.parse_args(args_list)
     target_file = file if file is not None else parsed_args.file
 
+    # 入力ソースの確定処理 (明示文字列 > 指定ファイル > 標準入力)
     if source_text is None:
         if target_file:
             try:
@@ -261,5 +277,68 @@ def main(
         sys.exit(1)
 
 
+# デフォルトのセルフテスト用サンプルプログラム
+SAMPLE_PROGRAM = """
+	jump	L_001
+L_001:
+	read	V_x
+	load	N_001
+	store	V_f1
+	load	N_001
+	store	V_f2
+L_002:
+	load	V_x
+	store	V__tmp
+	load	N_000
+	sub	V__tmp
+	jump	L_003
+	load	V_f1
+	add	V_f2
+	store	V_tmp
+	load	V_f1
+	store	V_f2
+	load	V_tmp
+	store	V_f1
+	load	V_x
+	sub	N_001
+	store	V_x
+	load	N_000
+	jump	L_002
+L_003:
+	load	V_f2
+	store	V__tmp
+	write	V__tmp
+	jump	0
+N_001:
+	lit	1
+N_000:
+	lit	0
+V_x:
+	decl	1
+V_f1:
+	decl	1
+V_f2:
+	decl	1
+V_tmp:
+	decl	1
+V__tmp:
+	decl	1
+"""
+
+
 if __name__ == "__main__":
-    main()
+    # =========================================================================
+    # 【PyCharm / IDE デバッグ時の使い方ガイド】
+    #
+    # IDE（PyCharm等）からこのファイルを直接「Run / Debug」する場合、
+    # カレントディレクトリは src/ になるため、samples/ へのパスには `../` を付けます。
+    # =========================================================================
+
+    # --- パターン A [基本テスト]: 組込サンプルプログラムを渡して最適化 ---
+    main(source_text=SAMPLE_PROGRAM)
+
+    # --- パターン B [ファイル指定]: 指定した .sss ファイルをロードして最適化 ---
+    # main(file="../samples/loop.sss")
+
+    # --- パターン C [標準入力]: CLIのパイプラインや手動入力をテスト（引数なし） ---
+    # main()
