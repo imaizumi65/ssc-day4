@@ -187,7 +187,7 @@ if __name__ == "__main__":
     # =========================================================================
 
     # --- パターン A [標準]: fib.ssl を対象に「最適化あり」でコンパイル＆実行 ---
-    main(file="samples/fib.ssl", optimize=True, execute=True, force=True)
+    main(file="../samples/fib.ssl", optimize=True, execute=True, force=True)
 
     # --- パターン B [検証]: 最適化を「オフ」にして 32ワード制限エラーを確認 ---
     # main(file="samples/fib.ssl", optimize=False, execute=True, force=True)
