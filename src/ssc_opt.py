@@ -1,12 +1,6 @@
 from dataclasses import dataclass, field
-import io
 import sys
-from pathlib import Path
-
 from ssc_core import AMAX, OPCODES
-
-# from ssc_opt import * 実行時の名前空間汚染を防止
-__all__ = ["SSCOptimizer", "Inst", "ProgramAnalysis"]
 
 
 @dataclass
@@ -31,53 +25,79 @@ class Inst:
 
 @dataclass
 class ProgramAnalysis:
-    """プログラム全体の構造解析結果"""
+    """プログラム全体の構造・制御フロー・データフロー解析結果"""
 
     label_to_index: dict[str, int] = field(default_factory=dict)
-    min_backward_jump_index: int = 99999
+    min_backward_jump_index: int = 0
     is_self_modifying: bool = False
     first_write_index: dict[str, int] = field(default_factory=dict)
     inst_constant_values: dict[int, int] = field(default_factory=dict)
 
 
 class SSCOptimizer:
-    """【第4回 課題】SSCアセンブリ言語のコードオプティマイザ"""
+    """SSCアセンブリ言語の高精度構造化オプティマイザ"""
 
     def optimize(self, asm_code: str) -> str:
-        """アセンブリコードを受け取り、最適化されたアセンブリコードを返す"""
+        # 最適化の本体、各種最適化を順に適用
+
+        # 1: アセンブリコードを解析・正規化して中間表現 (IR) に変換
         insts = self._parse_asm(asm_code)
 
-        # 1. 覗き穴最適化 (Peephole Optimization)
+        # ピープホール最適化を適用
         insts = self._peephole_optimize(insts)
 
-        # 2. プログラム構造解析
-        analysis = self._analyze(insts)
-
-        # 3. エントリポイントの最適化 (不要な初期ジャンプの除去)
-        insts = self._optimize_entry_point(insts, analysis)
-
-        # 4. 定数共有 (Constant Sharing)
-        analysis = self._analyze(insts)
-        insts = self._optimize_constants_general(insts, analysis)
-
-        # 5. メモリオーバーレイ (Memory Overlay)
-        analysis = self._analyze(insts)
-        insts = self._optimize_memory_overlay_general(insts, analysis)
-
-        # 6. 未参照ラベルのクリーンアップとフォーマット出力
+        # 不要ラベルの削除と最終フォーマット
         insts = self._clean_labels(insts)
+
         return self._format_asm(insts)
 
     def _parse_asm(self, asm_code: str) -> list[Inst]:
-        """アセンブリ文字列を IR (Inst オブジェクトのリスト) に変換 (提供コード)"""
+        """入力アセンブリを構文解析し、小文字化・略称展開・シンボル化して IR に変換する"""
+        # ssc_asm の OP_MAP に完全準拠した正規化テーブル
+        mnemonic_map = {
+            # OpCode 0: JUMP
+            "j": "jump", "jmp": "jump", "jump": "jump", "jpc": "jump",
+            # OpCode 1: ADD
+            "a": "add", "add": "add", "plus": "add", "pls": "add",
+            # OpCode 2: SUB
+            "b": "sub", "sub": "sub", "minus": "sub",
+            # OpCode 3: LOAD
+            "l": "load", "load": "load", "ld": "load",
+            # OpCode 4: STORE
+            "t": "store", "store": "store", "sta": "store", "st": "store", "save": "store", "sto": "store",
+            # OpCode 5: READ
+            "r": "read", "read": "read", "rd": "read",
+            # OpCode 6: WRITE
+            "w": "write", "write": "write", "wr": "write",
+            # OpCode 7: SHIFT
+            "s": "shift", "shift": "shift",
+            # 擬似命令 (データ定義): LIT
+            "d": "lit", "data": "lit", "lit": "lit", "literal": "lit", "value": "lit",
+            # 擬似命令 (領域確保): DECL
+            "decl": "decl", "storage": "decl",
+        }
+
+        # 引数を必須とするオペコードの集合
+        ops_requiring_arg = {
+            "jump", "add", "sub", "load", "store",
+            "read", "write", "shift", "lit", "decl",
+        }
+
         insts: list[Inst] = []
         pending_labels: list[str] = []
 
-        for line in asm_code.splitlines():
+        for line_idx, line in enumerate(asm_code.splitlines(), start=1):
+            # 1. コメントの除去 (アセンブリ規格 ';' および '#' の双方に対応)
+            if ";" in line:
+                line = line.split(";", 1)[0]
+            if "#" in line:
+                line = line.split("#", 1)[0]
+
             line = line.strip()
-            if not line or line.startswith(";"):
+            if not line:
                 continue
 
+            # 2. ラベルの切出し (例: "L_001: L/5")
             if ":" in line:
                 parts = line.split(":", 1)
                 pending_labels.append(parts[0].strip())
@@ -86,20 +106,80 @@ class SSCOptimizer:
                 rest = line
 
             if rest:
+                # 3. 簡易表記の区切り文字 '/' をスペースに置換 (例: "L/5" -> "L 5")
+                rest = rest.replace("/", " ")
                 tokens = rest.split(None, 1)
-                op = tokens[0]
+
+                op_raw = tokens[0].lower()
+
+                # 未知のオペコードの場合は構文エラーを出力
+                if op_raw not in mnemonic_map:
+                    raise SyntaxError(
+                        f"Assembly error at line {line_idx}: Unknown mnemonic '{tokens[0]}'"
+                    )
+
+                op = mnemonic_map[op_raw]
                 arg = tokens[1] if len(tokens) > 1 else None
+
+                # 不正アセンブリの即時検出 (引数不足チェック)
+                if op in ops_requiring_arg and not arg:
+                    raise SyntaxError(
+                        f"Assembly error at line {line_idx}: '{op}' requires an operand"
+                    )
+
                 insts.append(Inst(labels=pending_labels, op=op, arg=arg))
                 pending_labels = []
 
         if pending_labels:
             insts.append(Inst(labels=pending_labels))
 
+        # 生の数値アドレス指定を標準ラベル (A_xxx) へ正規化変換
+        return self._symbolize_raw_addresses(insts)
+
+    def _symbolize_raw_addresses(self, insts: list[Inst]) -> list[Inst]:
+        """生のアドレス参照 (例: load 5) を標準ラベル (A_005) に変換して正規化する"""
+        address_referencing_ops = {
+            "load",
+            "store",
+            "add",
+            "sub",
+            "write",
+            "read",
+            "jump",
+        }
+        auto_labels: dict[int, str] = {}
+
+        for inst in insts:
+            if not inst.op:
+                continue
+
+            # jump 0 (プログラム停止命令) はアドレスラベル化から除外
+            if inst.op == "jump" and inst.arg == "0":
+                continue
+
+            # 数値アドレス指定の命令を検知して自動ラベル化
+            if (
+                inst.op in address_referencing_ops
+                and inst.arg
+                and inst.arg.isdigit()
+            ):
+                target_idx = int(inst.arg)
+                if 0 <= target_idx < len(insts):
+                    if target_idx not in auto_labels:
+                        auto_labels[target_idx] = f"A_{target_idx:03d}"
+                    inst.arg = auto_labels[target_idx]
+
+        # 該当命令の行に生成したラベルを自動付与
+        for target_idx, lbl_name in auto_labels.items():
+            if lbl_name not in insts[target_idx].labels:
+                insts[target_idx].labels.append(lbl_name)
+
         return insts
 
     def _analyze(self, insts: list[Inst]) -> ProgramAnalysis:
-        """制御フローと変数の使用状況を解析 (提供コード)"""
         analysis = ProgramAnalysis()
+        # 後方ジャンプの初期値を命令列の長さ (範囲外のインデックス) に設定
+        analysis.min_backward_jump_index = len(insts)
 
         for idx, inst in enumerate(insts):
             for lbl in inst.labels:
@@ -113,7 +193,8 @@ class SSCOptimizer:
                         analysis.min_backward_jump_index, t_idx
                     )
 
-        if analysis.min_backward_jump_index == 99999:
+        # 後方ジャンプが存在しなかった場合（初期値のままの場合）
+        if analysis.min_backward_jump_index == len(insts):
             for idx, inst in enumerate(insts):
                 if inst.op in ("decl", "lit") or (
                     inst.op == "jump" and inst.arg == "0"
@@ -121,94 +202,37 @@ class SSCOptimizer:
                     analysis.min_backward_jump_index = idx
                     break
 
+        instruction_labels = {
+            lbl
+            for lbl, idx in analysis.label_to_index.items()
+            if idx >= analysis.min_backward_jump_index
+            and (lbl.startswith("L_") or lbl.startswith("A_"))
+        }
+        for inst in insts:
+            if inst.op == "store" and inst.arg in instruction_labels:
+                analysis.is_self_modifying = True
+                break
+
         for idx, inst in enumerate(insts):
             if inst.op in ("store", "read") and inst.arg:
                 analysis.first_write_index.setdefault(inst.arg, idx)
 
+        for idx, inst in enumerate(insts):
+            if inst.op in ("jump", "lit") and inst.arg and inst.arg.isdigit():
+                analysis.inst_constant_values[idx] = int(inst.arg)
+
         return analysis
 
-    # -----------------------------------------------------------------
-    # 【課題1】覗き穴最適化 (Peephole Optimization)
-    # -----------------------------------------------------------------
     def _peephole_optimize(self, insts: list[Inst]) -> list[Inst]:
-        """局所的な冗長パターンの除去
-
-        - 連続する不必要な load / store の削除 (例: store V_tmp 後に直ちに行われる load V_tmp)
-        - 冗長なロード処理のスキップ
-        """
-        optimized: list[Inst] = []
-        i = 0
-        ac_set: set[str] = set()
-
-        while i < len(insts):
-            curr = insts[i]
-
-            if curr.labels:
-                ac_set.clear()
-
-            # TODO [課題1]:
-            # 1. curr.op == "load" のとき、すでに AC にその引数 (curr.arg) が保持されている場合は
-            #    この load 命令をスキップ (除去) せよ。
-            # 2. load -> store V__tmp -> write V__tmp のパターンを検出した場合、
-            #    直ちに write 命令 1 行に短縮・削除するルールを実装せよ。
-
-            ac_set.clear()
-            optimized.append(curr)
-            i += 1
+        """ピープホール（覗き穴）最適化を適用して冗長な命令列を削除・統合する"""
+        # 命令列の並びを見て、冗長な命令を削除する
+        raise NotImplementedError("SSCOptimizer._peephole_optimize() の最適化処理を実装してください。")
+        optimized = insts.copy()
 
         return optimized
 
-    # -----------------------------------------------------------------
-    # 【課題2】定数共有 (Constant Sharing)
-    # -----------------------------------------------------------------
-    def _optimize_constants_general(
-        self, insts: list[Inst], analysis: ProgramAnalysis
-    ) -> list[Inst]:
-        """重複する定数 (lit 命令) の一元化
-
-        - N_001: lit 1 などの重複する宣言を集約し、命令側の参照ラベルを共通化せよ。
-        """
-        # TODO [課題2]:
-        # 重複する lit 命令の値を検出し、1つのメモリセルを複数の参照元で共有するロジックを完成させよ。
-        return insts
-
-    # -----------------------------------------------------------------
-    # 【課題3】メモリオーバーレイ (Memory Overlay)
-    # -----------------------------------------------------------------
-    def _optimize_memory_overlay_general(
-        self, insts: list[Inst], analysis: ProgramAnalysis
-    ) -> list[Inst]:
-        """変数領域 (decl) の再利用・オーバーレイ配置
-
-        - プログラム前半で一度も実行・更新されない変数領域 (decl) を、
-          非再実行領域や中間領域へ重ね合わせてコード長を圧縮せよ。
-        """
-        # TODO [課題3]:
-        # decl 命令で確保されている変数領域を、プログラム内の非再実行領域のアドレスへ統合・配置せよ。
-        return insts
-
-    def _optimize_entry_point(
-        self, insts: list[Inst], analysis: ProgramAnalysis
-    ) -> list[Inst]:
-        """先頭の不要な jump L_001 を除去 (提供コード)"""
-        if len(insts) < 2 or insts[0].op != "jump" or not insts[0].arg:
-            return insts
-
-        entry_label = insts[0].arg
-        if entry_label not in insts[1].labels:
-            return insts
-
-        is_referenced = any(
-            inst.arg == entry_label for inst in insts[2:] if inst.op
-        )
-        if not is_referenced:
-            insts[1].labels.remove(entry_label)
-            insts = insts[1:]
-
-        return insts
 
     def _clean_labels(self, insts: list[Inst]) -> list[Inst]:
-        """どこからも参照されていないラベルを削除 (提供コード)"""
         referenced_labels: set[str] = set()
         for inst in insts:
             if inst.arg and not inst.arg.isdigit():
@@ -233,30 +257,26 @@ class SSCOptimizer:
 def main(
     args_list: list[str] | None = None,
     file: str | None = None,
+    output: str | None = None,
     source_text: str | None = None,
 ):
-    """オプティマイザのメイン関数
-
-    CLIコマンド、パイプライン（標準入力）、PyCharm等からの直接呼び出しの
-    全てに対応しています。
-    """
     import argparse
 
     parser = argparse.ArgumentParser(
         prog="ssc_opt", description="SSC Optimizer (Peephole & Structure Optimizer)"
     )
     parser.add_argument(
-        "file",
-        nargs="?",
-        type=str,
-        default=None,
-        help="Input .sss file (default: stdin)",
+        "file", nargs="?", type=str, default=None, help="Input assembly file (default: stdin)"
+    )
+    parser.add_argument(
+        "-o", "--output", type=str, default=None, help="Output assembly file (default: stdout)"
     )
 
     parsed_args = parser.parse_args(args_list)
-    target_file = file if file is not None else parsed_args.file
 
-    # 入力ソースの確定処理 (明示文字列 > 指定ファイル > 標準入力)
+    target_file = file if file is not None else parsed_args.file
+    out_file = output if output is not None else parsed_args.output
+
     if source_text is None:
         if target_file:
             try:
@@ -271,13 +291,21 @@ def main(
     optimizer = SSCOptimizer()
     try:
         opt_output = optimizer.optimize(source_text)
-        print(opt_output)
     except Exception as e:
         sys.stderr.write(f"ssc_opt error: {e}\n")
         sys.exit(1)
 
+    if out_file:
+        try:
+            with open(out_file, "w", encoding="utf-8") as f:
+                f.write(opt_output + ("\n" if not opt_output.endswith("\n") else ""))
+        except OSError as e:
+            sys.stderr.write(f"ssc_opt: {e}\n")
+            sys.exit(2)
+    else:
+        sys.stdout.write(opt_output + ("\n" if not opt_output.endswith("\n") else ""))
 
-# デフォルトのセルフテスト用サンプルプログラム
+
 SAMPLE_PROGRAM = """
 	jump	L_001
 L_001:
@@ -327,18 +355,13 @@ V__tmp:
 
 
 if __name__ == "__main__":
-    # =========================================================================
-    # 【PyCharm / IDE デバッグ時の使い方ガイド】
-    #
-    # IDE（PyCharm等）からこのファイルを直接「Run / Debug」する場合、
-    # カレントディレクトリは src/ になるため、samples/ へのパスには `../` を付けます。
-    # =========================================================================
+    # --- 呼び出し方法の例 ---
 
-    # --- パターン A [基本テスト]: 組込サンプルプログラムを渡して最適化 ---
+    # 例1: ソースコード文字列を直接指定してテスト実行
     main(source_text=SAMPLE_PROGRAM)
 
-    # --- パターン B [ファイル指定]: 指定した .sss ファイルをロードして最適化 ---
-    # main(file="../samples/loop.sss")
+    # 例2: ファイル名を直接指定してテスト実行
+    # main(file="../samples/ssl/count.ssl")
 
-    # --- パターン C [標準入力]: CLIのパイプラインや手動入力をテスト（引数なし） ---
+    # 例3: コマンドライン引数（または標準入力）から実行する通常動作
     # main()

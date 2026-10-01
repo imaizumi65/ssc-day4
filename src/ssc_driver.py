@@ -190,10 +190,10 @@ if __name__ == "__main__":
     main(file="../samples/fib.ssl", optimize=True, execute=True, force=True)
 
     # --- パターン B [検証]: 最適化を「オフ」にして 32ワード制限エラーを確認 ---
-    # main(file="samples/fib.ssl", optimize=False, execute=True, force=True)
+    # main(file="../samples/fib.ssl", optimize=False, execute=True, force=True)
 
     # --- パターン C [デバッグ]: ステップ実行・レジスタダンプを有効化して実行 ---
-    # main(file="samples/fib.ssl", optimize=True, execute=True, force=True, debug=True)
+    # main(file="../samples/fib.ssl", optimize=True, execute=True, force=True, debug=True)
 
     # --- パターン D [CLI]: CLI引数・標準入力処理の動作確認用（引数なしで呼び出し）---
     # main()
