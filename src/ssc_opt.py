@@ -46,6 +46,8 @@ class SSCOptimizer:
         # ピープホール最適化を適用
         insts = self._peephole_optimize(insts)
 
+        # ここに作成した各種最適化を適用する処理を記述してください。
+
         # 不要ラベルの削除と最終フォーマット
         insts = self._clean_labels(insts)
 
